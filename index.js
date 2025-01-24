@@ -1,40 +1,30 @@
 require('dotenv').config();
-const port = process.env.PORT || 4000
+const port = process.env.PORT || 3000
 const express = require('express')
 const app = express()
 const cors = require('cors')
 const bcrypt = require('bcrypt')
-const cookieParser = require('cookie-parser');
-const expressSession = require('express-session');
 const userModel = require('./models/users')
 const postModel = require('./models/posts')
 const chapterModel = require('./models/chapters')
 const subjectModel = require('./models/subjects')
 const upload = require('./multer')
 const path = require('path')
-
-
-const secretKey = process.env.SECRET_KEY;
+const fs = require('fs');
 
 
 // middlewares
 app.use(express.json())
 app.use(cors())
-app.use(cookieParser())
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'))
 
-// passport setup 
-app.use(expressSession({
-    saveUninitialized: true,
-    resave: true,
-    secret: secretKey
-}))
 
 // Register endpoint
 app.post('/', async (req, res) => {
     try {
         // Extract user details from request body
+        console.log('entered')
         const { username, email, password } = req.body;
 
         // Check if user already exists
@@ -56,7 +46,7 @@ app.post('/', async (req, res) => {
         // Save the new user
         await newUser.save();
 
-
+        console.log('user saved')
         // Respond with user details
         res.status(201).json({ newUser });
     } catch (error) {
@@ -67,29 +57,40 @@ app.post('/', async (req, res) => {
 
 
 // Login endpoint
-app.post('/login', async function (req, res, next) {
+app.post('/', async (req, res) => {
     try {
-        // Extract login credentials from request body
-        const { username, password } = req.body;
+        console.log('entered');
+        const { username, email, password } = req.body;
 
-        // Find user by email
-        const user = await userModel.findOne({ username });
+        // Debug: Log request body
+        console.log('Request body:', { username, email, password });
 
-        if (!user) {
-            // User not found
-            return res.status(401).json({ error: 'Invalid email or password' });
+        // Check if user already exists
+        const existingUser = await userModel.findOne({ email });
+        if (existingUser) {
+            console.log('User already exists:', existingUser);
+            return res.status(400).json({ error: 'User already exists' });
         }
 
-        // Compare passwords
-        const passwordMatch = await bcrypt.compare(password, user.password);
-        if (!passwordMatch) {
-            // Passwords do not match
-            return res.status(401).json({ error: 'Invalid email or password' });
-        }
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        console.log('Password hashed:', hashedPassword);
+
+        // Create a new user document
+        const newUser = new userModel({
+            username: username,
+            email: email,
+            password: hashedPassword
+        });
+
+        // Save the new user
+        await newUser.save();
+        console.log('User saved:', newUser);
+
         // Respond with user details
-        res.json({ user });
+        res.status(201).json({ newUser });
     } catch (error) {
-        console.error('Login error:', error);
+        console.error('Registration error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -98,8 +99,7 @@ app.post('/login', async function (req, res, next) {
 app.post('/profileUpdate', upload.single('profileImg'), async (req, res) => {
     const user = await userModel.findOne({ _id: req.body.userId });
     user.profile = `http://localhost:3000/uploads/${req.file.filename}`;
-    await user.save()
-    // Process the uploaded file, e.g., save it to a database or file system
+    await user.save();
     res.send(user.profile);
 });
 
@@ -112,7 +112,7 @@ app.post('/uploadPdf', upload.single('pdf-file'), async (req, res) => {
         subject: req.body.subject,
         topics: req.body.topics,
         qualification: req.body.qualification,
-        filename: req.file.originalname,
+        filename: req.file.filename,
         author: userData.username,
         authorId: userData._id,
     });
@@ -249,6 +249,7 @@ app.get('/getChapters/', async (req, res) => {
 })
 
 
+// searching pdf's by select tag
 app.get('/getSubjectPdfs', async (req, res) => {
     const option = req.query.option;
     const posts = await postModel.find({ subject: option })
@@ -256,6 +257,7 @@ app.get('/getSubjectPdfs', async (req, res) => {
 });
 
 
+// searching pdf's by input tag
 app.get('/getChapterPdfs', async (req, res) => {
     const chapters = req.query.chapter;
     const posts = await postModel.find({ chapter: chapters })
@@ -263,6 +265,33 @@ app.get('/getChapterPdfs', async (req, res) => {
     res.send(posts);
 });
 
+
+// Backend route to download PDF
+app.get('/downloadPdf', async (req, res) => {
+    try {
+        const pdf = await postModel.findById(req.query.id);
+        if (!pdf) {
+            return res.status(404).send("PDF not found");
+        }
+        
+        const filePath = path.join(__dirname, 'public/uploads', pdf.filename);
+
+        // Check if the file exists
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).send("File not found");
+        }
+
+        // Set content-disposition header to trigger download
+        res.setHeader('Content-Disposition', `attachment; filename="${pdf.chapter}"`);
+        
+        // Send the file
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.pipe(res);
+    } catch (err) {
+        console.log(err);
+        res.status(500).send('Error downloading PDF');
+    }
+});
 
 
 
