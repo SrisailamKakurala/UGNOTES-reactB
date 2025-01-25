@@ -12,6 +12,7 @@ const upload = require('./multer')
 const path = require('path')
 const fs = require('fs');
 
+const { createOrder, verifyPayment, handleWithdrawal  } = require('./razorpayPayment');
 
 // middlewares
 app.use(express.json())
@@ -21,42 +22,6 @@ app.use(express.static('public'))
 
 
 // Register endpoint
-app.post('/', async (req, res) => {
-    try {
-        // Extract user details from request body
-        console.log('entered')
-        const { username, email, password } = req.body;
-
-        // Check if user already exists
-        const existingUser = await userModel.findOne({ email });
-        if (existingUser) {
-            return res.status(400).json({ error: 'User already exists' });
-        }
-
-        // Hash password
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Create a new user document
-        const newUser = new userModel({
-            username: username,
-            email: email,
-            password: hashedPassword
-        });
-
-        // Save the new user
-        await newUser.save();
-
-        console.log('user saved')
-        // Respond with user details
-        res.status(201).json({ newUser });
-    } catch (error) {
-        console.error('Registration error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-
-// Login endpoint
 app.post('/', async (req, res) => {
     try {
         console.log('entered');
@@ -91,6 +56,36 @@ app.post('/', async (req, res) => {
         res.status(201).json({ newUser });
     } catch (error) {
         console.error('Registration error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+
+
+// Login endpoint
+app.post('/login', async function (req, res) {
+    try {
+        // Extract login credentials from request body
+        const { username, password } = req.body;
+
+        // Find user by email
+        const user = await userModel.findOne({ username });
+
+        if (!user) {
+            // User not found
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        // Compare passwords
+        const passwordMatch = await bcrypt.compare(password, user.password);
+        if (!passwordMatch) {
+            // Passwords do not match
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+        // Respond with user details
+        res.json({ user });
+    } catch (error) {
+        console.error('Login error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -266,24 +261,47 @@ app.get('/getChapterPdfs', async (req, res) => {
 });
 
 
-// Backend route to download PDF
-app.get('/downloadPdf', async (req, res) => {
+// Route to create Razorpay order
+app.post('/create-order', createOrder, (req, res) => {
+    res.json({ order: req.razorpayOrder });
+});
+
+
+// Route to verify payment and download PDF
+app.post('/downloadPdf', verifyPayment, async (req, res) => {
     try {
+        if (!req.paymentSuccess) {
+            return res.status(400).json({ error: 'Payment not verified' });
+        }
+
+        // Find the PDF by ID
         const pdf = await postModel.findById(req.query.id);
         if (!pdf) {
             return res.status(404).send("PDF not found");
         }
-        
-        const filePath = path.join(__dirname, 'public/uploads', pdf.filename);
+
+        // Find the user associated with the post
+        const user = await userModel.findById(pdf.authorId);
+        if (!user) {
+            return res.status(404).send("User not found");
+        }
 
         // Check if the file exists
+        const filePath = path.join(__dirname, 'public/uploads', pdf.filename);
         if (!fs.existsSync(filePath)) {
             return res.status(404).send("File not found");
         }
 
+        // Increment downloads by 1 and amount by 1.5
+        user.downloads += 1;
+        user.amount += 1.5;
+
+        // Save the updated user
+        await user.save();
+
         // Set content-disposition header to trigger download
-        res.setHeader('Content-Disposition', `attachment; filename="${pdf.chapter}"`);
-        
+        res.setHeader('Content-Disposition', `attachment; filename="${pdf.chapter}.pdf"`);
+
         // Send the file
         const fileStream = fs.createReadStream(filePath);
         fileStream.pipe(res);
@@ -294,6 +312,7 @@ app.get('/downloadPdf', async (req, res) => {
 });
 
 
+app.post('/withdraw',  handleWithdrawal);
 
 app.listen(port, () => {
     console.log('server started');
